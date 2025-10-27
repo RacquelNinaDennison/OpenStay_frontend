@@ -372,6 +372,3 @@ This is a **demo**:
 
 ---
 
-## License
-
-MIT (or your preferred license)
