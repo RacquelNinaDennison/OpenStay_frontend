@@ -1,6 +1,6 @@
 // src/pages/Dashboard.tsx
 import { useEffect, useMemo, useState } from "react";
-import { phantom, releaseWithWallet, connection } from "../lib/escrowClient";
+import { phantom, releaseWithWallet } from "../lib/escrowClient";
 
 type Booking = {
   id: string;
@@ -9,6 +9,7 @@ type Booking = {
   beneficiary: string;
   totalUi: string;
   releaseTs: number;
+  released?: boolean;
 };
 
 function readBookings(): Booking[] {
@@ -28,14 +29,18 @@ export default function Dashboard({ wallet }: { wallet: string | null }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [err, setErr] = useState<string>("");
 
-  useEffect(() => {
-    setItems(readBookings());
-  }, [wallet]);
+  useEffect(() => { setItems(readBookings()); }, [wallet]);
 
   const myItems = useMemo(
     () => (wallet ? items.filter((x) => x.initializer === wallet) : []),
     [items, wallet]
   );
+
+  function markReleased(id: string) {
+    const next = items.map(b => b.id === id ? { ...b, released: true } : b);
+    setItems(next);
+    localStorage.setItem("bookings", JSON.stringify(next));
+  }
 
   async function handleRelease(rec: Booking) {
     setErr("");
@@ -45,20 +50,20 @@ export default function Dashboard({ wallet }: { wallet: string | null }) {
       if (!p?.isPhantom) throw new Error("Phantom not detected");
       if (!p.publicKey) await p.connect();
 
-      console.log("[DASH] release start", rec);
+      const canRelease = Math.floor(Date.now()/1000) >= (rec.releaseTs || 0);
+      if (!canRelease) throw new Error("Release time not reached yet");
+
       const sig = await releaseWithWallet({
         wallet: p,
         initializer: rec.initializer,
         beneficiary: rec.beneficiary,
         releaseTs: rec.releaseTs,
       });
-      console.log("[DASH] release signature", sig);
 
-      await connection().confirmTransaction(sig, "confirmed");
+      markReleased(rec.id);
       alert(`Released! ${sig.slice(0, 8)}…`);
     } catch (e: any) {
-      const msg = e?.message || "Release failed. See console.";
-      setErr(msg);
+      setErr(e?.message || "Release failed. See console.");
       console.error("[Dashboard release error]", e);
     } finally {
       setBusyId(null);
@@ -97,7 +102,8 @@ export default function Dashboard({ wallet }: { wallet: string | null }) {
       {wallet && myItems.length > 0 && (
         <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
           {myItems.map((r) => {
-            const canRelease = Date.now() / 1000 >= (r.releaseTs || 0);
+            const canRelease = Date.now()/1000 >= (r.releaseTs || 0);
+            const released = !!r.released;
             return (
               <div key={r.id} className="card" style={{ padding: 16, borderRadius: 12, boxShadow: "0 1px 3px rgba(16,24,40,0.08)" }}>
                 <div className="row" style={{ alignItems: "center", gap: 16, justifyContent: "space-between", flexWrap: "wrap" }}>
@@ -107,16 +113,18 @@ export default function Dashboard({ wallet }: { wallet: string | null }) {
                     <div className="muted" style={{ marginTop: 4 }}>
                       Releases: {r.releaseTs ? new Date(r.releaseTs * 1000).toLocaleString() : "—"}
                     </div>
+                    {released && <div className="ok" style={{ marginTop: 6 }}>Released ✅</div>}
                   </div>
+
                   <div className="row" style={{ gap: 8 }}>
                     <button
                       className="btn btn-accent"
                       onClick={() => handleRelease(r)}
-                      disabled={busyId === r.id || !canRelease}
-                      title={!canRelease ? "Release time not reached yet" : ""}
+                      disabled={busyId === r.id || !canRelease || released}
+                      title={!canRelease ? "Release time not reached yet" : released ? "Already released" : ""}
                       style={{ minWidth: 140 }}
                     >
-                      {busyId === r.id ? "Releasing…" : "Release"}
+                      {busyId === r.id ? "Releasing…" : released ? "Released" : "Release"}
                     </button>
                   </div>
                 </div>

@@ -12,7 +12,6 @@ OpenStay is a demo dApp that lets **guests** lock an SPL token (e.g. USDC) in a 
 
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
-- [Repository Layout](#repository-layout)
 - [Quick Start (Devnet)](#quick-start-devnet)
   - [1) Deploy the Anchor program](#1-deploy-the-anchor-program)
   - [2) Fund and mint test tokens](#2-fund-and-mint-test-tokens)
@@ -56,38 +55,11 @@ OpenStay is a demo dApp that lets **guests** lock an SPL token (e.g. USDC) in a 
 
 ---
 
-## Repository Layout
-
-\`\`\`
-openstay/
-  anchor/                        # Anchor program
-    programs/timelock-escrow/
-      src/lib.rs
-    Anchor.toml
-    Cargo.toml
-  frontend/                     # React + Vite app
-    src/
-      lib/escrowClient.ts
-      pages/
-        Landing.tsx
-        Listings.tsx
-        ListingDetail.tsx
-        Checkout.tsx
-        Dashboard.tsx
-      App.tsx
-      index.css
-      polyfills.ts
-      main.tsx
-    .env.example
-    vite.config.ts
-    package.json
-\`\`\`
-
----
-
 ## Quick Start (Devnet)
 
-### 1) Deploy the Anchor program
+### 1) Deploy the Anchor program 
+
+Repository can be found at : https://github.com/RacquelNinaDennison/OpenStay_anchor
 
 From \`anchor/\`:
 
@@ -159,12 +131,38 @@ solana airdrop 1 $GUEST --url $URL || true
 \`\`\`
 
 > If you don’t have a mint yet, create one with \`spl-token create-token --decimals 6\` (you will be the mint authority), then repeat the steps above.
+"### Top up Guest Test USDC (Devnet)
 
+We use an owned devnet mint (e.g., 6 decimals) to fund the guest (initializer) with test USDC.
+
+Vars
+\`\`\`bash
+URL=https://api.devnet.solana.com
+GUEST=<GUEST_PUBLIC_KEY>   # e.g., Phantom address used by the guest
+MINT=<YOUR_DEVNET_TEST_MINT>
+\`\`\`
+
+Check current balance
+\`\`\`bash
+spl-token accounts --owner "$GUEST" --url "$URL"
+\`\`\`
+
+Mint more to the guest (requires mint authority)
+\`\`\`bash
+# Example: mint +190 (for a 6-decimal mint, this is 190.000000)
+spl-token mint "$MINT" 190 --recipient-owner "$GUEST" --url "$URL"
+\`\`\`
+
+Verify
+\`\`\`
+spl-token accounts --owner "$GUEST" --url "$URL"
+
+\`\`\`
 ---
 
 ### 3) Configure the frontend
 
-From \`frontend/\`:
+Within the frontend directory
 
 \`\`\`bash
 cp .env.example .env
@@ -179,47 +177,9 @@ VITE_USDC_MINT=<YOUR_DEVNET_TEST_MINT> # same as $MINT above
 VITE_USDC_DECIMALS=6
 \`\`\`
 
-Install deps + **Buffer polyfill** (required by SPL in browser):
-
-\`\`\`bash
-npm install
-npm i buffer
-\`\`\`
-
-Create \`src/polyfills.ts\` (must exist and load first):
-
-\`\`\`ts
-// src/polyfills.ts
-import { Buffer } from "buffer";
-
-declare global {
-  interface Window { Buffer: typeof Buffer }
-}
-
-if (!(window as any).Buffer) {
-  (window as any).Buffer = Buffer;
-}
-\`\`\`
-
-Ensure it’s the **first import** in \`src/main.tsx\`:
-
-\`\`\`ts
-// src/main.tsx
-import "./polyfills"; // must be first, before any Solana/SPL imports
-
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import App from "./App";
-import "./index.css";
-
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>
-);
+Install dependencies 
+\`\`\`dotenv
+npm i
 \`\`\`
 
 ---

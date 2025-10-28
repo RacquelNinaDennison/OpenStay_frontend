@@ -1,3 +1,5 @@
+// src/lib/escrowClient.ts
+import { Buffer } from "buffer";
 import {
   Connection,
   PublicKey,
@@ -11,41 +13,44 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
 } from "@solana/spl-token";
 
-import { Buffer } from "buffer";
-
-
+// ---------- ENV ----------
 type EscrowConfig = {
   RPC: string;
   PROGRAM_ID: PublicKey;
   USDC_MINT: PublicKey;
+  USDC_DECIMALS: number;
 };
 
 function getConfig(): EscrowConfig {
   const RPC = import.meta.env.VITE_SOLANA_RPC as string | undefined;
   const PROGRAM = import.meta.env.VITE_PROGRAM_ID as string | undefined;
   const MINT = import.meta.env.VITE_USDC_MINT as string | undefined;
+  const DEC = Number(import.meta.env.VITE_USDC_DECIMALS ?? 6);
 
-  if (!RPC)      throw new Error("Missing VITE_SOLANA_RPC in your front-end env.");
-  if (!PROGRAM)  throw new Error("Missing VITE_PROGRAM_ID in your front-end env.");
-  if (!MINT)     throw new Error("Missing VITE_USDC_MINT in your front-end env.");
+  if (!RPC)     throw new Error("Missing VITE_SOLANA_RPC in your front-end env.");
+  if (!PROGRAM) throw new Error("Missing VITE_PROGRAM_ID in your front-end env.");
+  if (!MINT)    throw new Error("Missing VITE_USDC_MINT in your front-end env.");
 
   return {
     RPC,
     PROGRAM_ID: new PublicKey(PROGRAM),
     USDC_MINT: new PublicKey(MINT),
+    USDC_DECIMALS: DEC,
   };
 }
 
+// Exported connection (object, not a function)
+const { RPC } = getConfig();
+const ws = RPC.startsWith("https://")
+  ? RPC.replace("https://", "wss://")
+  : RPC.replace("http://", "ws://");
 
-let _connection: Connection | null = null;
-export function connection(): Connection {
-  if (_connection) return _connection;
-  const { RPC } = getConfig();
-  _connection = new Connection(RPC, "confirmed");
-  return _connection;
-}
+export const connection = new Connection(RPC, {
+  commitment: "confirmed",
+  wsEndpoint: ws,
+});
 
-
+// ---------- Wallet ----------
 export type SolanaProvider = {
   isPhantom?: boolean;
   publicKey?: { toBase58(): string };
@@ -53,13 +58,15 @@ export type SolanaProvider = {
   signAndSendTransaction?: (tx: Transaction) => Promise<{ signature: string }>;
   signTransaction?: (tx: Transaction) => Promise<Transaction>;
   on?: (event: string, cb: (...args: any[]) => void) => void;
+  removeAllListeners?: () => void;
 };
+
 export const phantom = (): SolanaProvider | null => {
   const w = window as any;
   return w?.solana ?? w?.phantom?.solana ?? null;
 };
 
-
+// ---------- Bytes helpers ----------
 function i64LeBytes(n: number): Uint8Array {
   const buf = new ArrayBuffer(8);
   new DataView(buf).setBigInt64(0, BigInt(n), true);
@@ -72,21 +79,22 @@ function u64LeBytes(n: string | number | bigint): Uint8Array {
   return new Uint8Array(buf);
 }
 function concatBytes(...chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((acc, c) => acc + c.length, 0);
+  const total = chunks.reduce((a, c) => a + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
   return out;
 }
 
-const DISC_INIT = new Uint8Array([0xaf,0xaf,0x6d,0x1f,0x0d,0x98,0x9b,0xed]);
+// ---------- Discriminators (your hard-coded values) ----------
+const DISC_INIT    = new Uint8Array([0xaf,0xaf,0x6d,0x1f,0x0d,0x98,0x9b,0xed]);
 const DISC_RELEASE = new Uint8Array([0xfd,0xf9,0x0f,0xce,0x1c,0x7f,0xc1,0xf1]);
 
-
+// ---------- Program IDs ----------
 const TOKEN_PROGRAM_ID      = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const ASSOCIATED_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
-
+// ---------- PDA + ATAs ----------
 export function escrowPda(
   initializer: PublicKey,
   beneficiary: PublicKey,
@@ -96,11 +104,11 @@ export function escrowPda(
   const { PROGRAM_ID } = getConfig();
   return PublicKey.findProgramAddressSync(
     [
-      new TextEncoder().encode("escrow"),
+      Buffer.from("escrow"),
       initializer.toBuffer(),
       beneficiary.toBuffer(),
       mint.toBuffer(),
-      i64LeBytes(releaseTs),
+      Buffer.from(i64LeBytes(releaseTs)),
     ],
     PROGRAM_ID
   );
@@ -123,7 +131,6 @@ function ixInitialize(params: {
   releaseTs: number;
 }): TransactionInstruction {
   const { PROGRAM_ID } = getConfig();
-
   const keys = [
     { pubkey: params.initializer,    isSigner: true,  isWritable: true },
     { pubkey: params.beneficiary,    isSigner: false, isWritable: false },
@@ -136,9 +143,11 @@ function ixInitialize(params: {
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
   ];
 
-  const data = concatBytes(DISC_INIT, u64LeBytes(params.amount), i64LeBytes(params.releaseTs));
+  // Web3 expects Buffer; convert from Uint8Array
+  const dataU8 = concatBytes(DISC_INIT, u64LeBytes(params.amount), i64LeBytes(params.releaseTs));
+  const data   = Buffer.from(dataU8);
 
-  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data: data as unknown as Buffer });
+  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data });
 }
 
 function ixRelease(params: {
@@ -150,7 +159,6 @@ function ixRelease(params: {
   beneficiaryAta: PublicKey;
 }): TransactionInstruction {
   const { PROGRAM_ID } = getConfig();
-
   const keys = [
     { pubkey: params.payer,          isSigner: true,  isWritable: true  },
     { pubkey: params.beneficiary,    isSigner: false, isWritable: false },
@@ -162,15 +170,26 @@ function ixRelease(params: {
     { pubkey: ASSOCIATED_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
   ];
-
-  return new TransactionInstruction({
-    programId: PROGRAM_ID,
-    keys,
-    data: DISC_RELEASE as unknown as Buffer,
-  });
+  // Convert to Buffer
+  const data = Buffer.from(DISC_RELEASE);
+  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data });
 }
 
-// ---------- Public API ----------
+// ---------- Public helpers ----------
+export function uiToBase(ui: string, decimals = getConfig().USDC_DECIMALS): string {
+  const [i, f = ""] = ui.trim().split(".");
+  const frac = (f + "0".repeat(decimals)).slice(0, decimals);
+  return (BigInt(i || "0") * BigInt(10 ** decimals) + BigInt(frac || "0")).toString();
+}
+export function toDateLocalInput(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+export function localToUnix(s: string) {
+  return Math.floor(new Date(s).getTime() / 1000);
+}
+
+// ---------- Hold / Release ----------
 export async function holdWithWallet(args: {
   wallet: SolanaProvider;
   initializer: string;
@@ -179,7 +198,6 @@ export async function holdWithWallet(args: {
   releaseTs: number;
 }): Promise<string> {
   const { USDC_MINT } = getConfig();
-  const conn = connection();
 
   const initializerPk = new PublicKey(args.initializer);
   const beneficiaryPk = new PublicKey(args.beneficiary);
@@ -188,9 +206,9 @@ export async function holdWithWallet(args: {
   const initializerTa = ata(initializerPk, USDC_MINT);
   const vault         = vaultAta(escrow, USDC_MINT);
 
-  // Ensure initializer ATA exists and has funds
+  // Ensure initializer ATA exists & has funds
   try {
-    const acc = await getSplAccount(conn, initializerTa);
+    const acc = await getSplAccount(connection, initializerTa);
     const have = BigInt(acc.amount.toString());
     const need = BigInt(args.amountBase);
     if (have < need) throw new Error(`Insufficient USDC: have ${have}, need ${need}`);
@@ -218,18 +236,18 @@ export async function holdWithWallet(args: {
   ];
 
   const tx = new Transaction().add(...ixs);
-  const { blockhash } = await conn.getLatestBlockhash("processed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("processed");
   tx.recentBlockhash = blockhash;
   tx.feePayer = initializerPk;
 
   if (args.wallet.signAndSendTransaction) {
     const { signature } = await args.wallet.signAndSendTransaction(tx);
-    await conn.confirmTransaction(signature, "confirmed");
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
     return signature;
   } else if (args.wallet.signTransaction) {
     const signed = await args.wallet.signTransaction(tx);
-    const sig = await conn.sendRawTransaction(signed.serialize());
-    await conn.confirmTransaction(sig, "confirmed");
+    const sig = await connection.sendRawTransaction(signed.serialize());
+    await connection.confirmTransaction(sig, "confirmed");
     return sig;
   }
   throw new Error("Wallet cannot sign transactions");
@@ -242,7 +260,6 @@ export async function releaseWithWallet(args: {
   releaseTs: number;
 }): Promise<string> {
   const { USDC_MINT } = getConfig();
-  const conn = connection();
 
   if (!args.wallet.publicKey) await args.wallet.connect();
   const payerPk       = new PublicKey(args.wallet.publicKey!.toBase58());
@@ -264,18 +281,18 @@ export async function releaseWithWallet(args: {
     })
   );
 
-  const { blockhash } = await conn.getLatestBlockhash("processed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("processed");
   tx.recentBlockhash = blockhash;
   tx.feePayer = payerPk;
 
   if (args.wallet.signAndSendTransaction) {
     const { signature } = await args.wallet.signAndSendTransaction(tx);
-    await conn.confirmTransaction(signature, "confirmed");
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
     return signature;
   } else if (args.wallet.signTransaction) {
     const signed = await args.wallet.signTransaction(tx);
-    const sig = await conn.sendRawTransaction(signed.serialize());
-    await conn.confirmTransaction(sig, "confirmed");
+    const sig = await connection.sendRawTransaction(signed.serialize());
+    await connection.confirmTransaction(sig, "confirmed");
     return sig;
   }
   throw new Error("Wallet cannot sign transactions");
